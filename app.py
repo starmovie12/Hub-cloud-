@@ -1,110 +1,91 @@
+import os
+import time
+import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import cloudscraper
-import re
-import time
-import os
+from DrissionPage import ChromiumPage, ChromiumOptions
+from pyvirtualdisplay import Display
 
 app = Flask(__name__)
 CORS(app)
 
-# --- CONFIGURATION ---
-def get_scraper():
-    return cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'android',
-            'desktop': False
-        }
-    )
+# 🖥️ Virtual Display (Render ke liye zaroori hai)
+try:
+    display = Display(visible=0, size=(1920, 1080))
+    display.start()
+except:
+    pass
 
-def solve_hubcloud(url):
-    print(f"\n⚡ Processing: {url}")
-    scraper = get_scraper()
-    
+def get_browser():
+    co = ChromiumOptions()
+    co.set_argument('--no-sandbox')
+    co.set_argument('--disable-dev-shm-usage')
+    co.set_argument('--headless=new') 
+    co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
+    return ChromiumPage(addr_or_opts=co)
+
+def solve_hubcloud_logic(url):
+    page = None
     try:
-        # --- STEP 1: LOAD FIRST PAGE ---
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-            "Referer": "https://hdhub4u.fo/"
-        }
+        print(f"🚀 Opening Real Chrome: {url}")
+        page = get_browser()
         
-        # Allow redirects true rakha hai taki agar direct video page par bhej de to pakad le
-        response = scraper.get(url, headers=headers, allow_redirects=True, timeout=20)
+        # 1. Page Load
+        page.get(url)
         
-        # 🛑 DEBUG CHECK: Agar Cloudflare ne roka hai to pata chal jayega
-        page_title_match = re.search(r'<title>(.*?)</title>', response.text)
-        page_title = page_title_match.group(1) if page_title_match else "No Title"
-        print(f"📄 Page Title: {page_title}")
-
-        if "Just a moment" in page_title or "Access denied" in page_title:
-            return {"status": "error", "message": "Cloudflare Blocked IP (Try redeploying)", "title": page_title}
-
-        # --- STEP 2: FIND REDIRECT LINK (3 Patterns) ---
+        # 🛡️ Cloudflare Wait (Sabse Zaroori)
+        time.sleep(5) 
         
-        # Pattern A: Standard HubCloud Link
-        match = re.search(r'href="([^"]+hubcloud\.php\?[^"]+)"', response.text)
+        title = page.title
+        print(f"📄 Title: {title}")
         
-        # Pattern B: ID based (aksar 'download' id hoti hai)
-        if not match:
-            match = re.search(r'id="download"[^>]+href="([^"]+)"', response.text)
+        if "Just a moment" in title or "Access denied" in title:
+             # Agar block hua, to page refresh try karo
+             print("⚠️ Cloudflare detected, refreshing...")
+             page.refresh()
+             time.sleep(5)
+        
+        html = page.html
+        
+        # 2. Link Extraction Logic (Regex)
+        # HubCloud Redirect Link
+        match = re.search(r'href="([^"]+hubcloud\.php\?[^"]+)"', html)
+        if not match: match = re.search(r'id="download"[^>]+href="([^"]+)"', html)
+        if not match: match = re.search(r'class="[^"]*btn-success[^"]*"[^>]+href="([^"]+)"', html)
+        
+        if match:
+            # Agar Redirect link hai, to us par click/visit karo
+            next_url = match.group(1).replace("&amp;", "&")
+            print(f"✔ Redirect Found: {next_url}")
             
-        # Pattern C: Generic Class based (kabhi kabhi btn-success hota hai)
-        if not match:
-             match = re.search(r'class="[^"]*btn-success[^"]*"[^>]+href="([^"]+)"', response.text)
+            page.get(next_url)
+            time.sleep(4) # Wait for final page
+            html = page.html
 
-        if not match:
-            # Agar ab bhi nahi mila, to HTML ka thoda hissa return karo debug ke liye
-            return {
-                "status": "error", 
-                "message": "Redirect Link Not Found (Regex Mismatch)", 
-                "html_snippet": response.text[:200]
-            }
-
-        next_url = match.group(1).replace("&amp;", "&")
-        print(f"✔ Redirect Found: {next_url}")
+        # 3. Final Video Link
+        video_link = re.search(r'(https?://[^"\s\'>]+\.(?:mkv|mp4|avi)[^"\s\'>]*)', html)
+        if not video_link: video_link = re.search(r'href="([^"]+token=[^"]+)"', html)
         
-        # --- STEP 3: FINAL PAGE ---
-        time.sleep(1) # Thoda saans lene do server ko
-        headers["Referer"] = url 
-        
-        final_resp = scraper.get(next_url, headers=headers, timeout=20)
-        content = final_resp.text
-        
-        # --- STEP 4: EXTRACT VIDEO LINK ---
-        # Direct .mkv / .mp4 / .avi
-        video_link = re.search(r'(https?://[^"\s\'>]+\.(?:mkv|mp4|avi)[^"\s\'>]*)', content)
-        
-        # Token Link (GDFLIX/HubCloud Special)
-        if not video_link:
-            video_link = re.search(r'href="([^"]+token=[^"]+)"', content)
-            
-        # Kabhi kabhi link 'btn-danger' me hota hai
-        if not video_link:
-             video_link = re.search(r'class="[^"]*btn-danger[^"]*"[^>]+href="([^"]+)"', content)
-
         if video_link:
             return {"status": "success", "link": video_link.group(1)}
         else:
-            return {
-                "status": "error", 
-                "message": "Final Video Link Not Found",
-                "final_page_title": re.search(r'<title>(.*?)</title>', content).group(1) if re.search(r'<title>(.*?)</title>', content) else "Unknown"
-            }
+            return {"status": "error", "message": "Link not found in HTML"}
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+    finally:
+        if page:
+            page.quit() # Browser band karna mat bhoolna
 
-# --- SERVER ---
 @app.route('/', methods=['GET'])
 def home():
-    return "HubCloud Solver V2 is Ready! 🚀"
+    return "HubCloud Real-Browser API Running 🚀"
 
 @app.route('/solve', methods=['GET'])
-def api_handler():
+def solve():
     url = request.args.get('url')
-    if not url: return jsonify({"error": "URL missing"}), 400
-    return jsonify(solve_hubcloud(url))
+    if not url: return jsonify({"error": "URL missing"})
+    return jsonify(solve_hubcloud_logic(url))
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
