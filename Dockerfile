@@ -1,32 +1,31 @@
-# Python Image
-FROM python:3.9-slim
+# 1. Python Image (Stable Version)
+FROM python:3.9-slim-bookworm
 
-# Install Chrome & Dependencies
+# 2. Install Basic Tools
+# Humne bekar ke packages hata diye hain
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     unzip \
     xvfb \
-    libxi6 \
-    libgconf-2-4 \
-    libnss3 \
-    default-jdk \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Chrome (Latest Stable)
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list' \
+# 3. Install Google Chrome (The Smart Way)
+# Ye command direct Chrome download karegi aur uske liye zaroori
+# saare drivers khud dhoond kar install karegi. No manual errors!
+RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
     && apt-get update \
-    && apt-get install -y google-chrome-stable
+    && apt-get install -y ./google-chrome-stable_current_amd64.deb \
+    && rm google-chrome-stable_current_amd64.deb
 
-# Set Work Directory
+# 4. Set Working Directory
 WORKDIR /app
 
-# Copy Files
+# 5. Copy Files
 COPY . /app
 
-# Install Python Requirements
+# 6. Install Python Requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Run the App
+# 7. Run the App
 CMD ["gunicorn", "--bind", "0.0.0.0:10000", "app:app"]
